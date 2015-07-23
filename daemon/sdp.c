@@ -189,6 +189,7 @@ struct sdp_attribute {
 		ATTR_FINGERPRINT,
 		ATTR_SETUP,
 		ATTR_RTPMAP,
+		ATTR_RTCP_RSIZE,
 	} attr;
 
 	union {
@@ -849,6 +850,10 @@ static int parse_attribute(struct sdp_attribute *a) {
 				ret = parse_attribute_candidate(a);
 			else if (!str_cmp(&a->name, "ice-ufrag"))
 				a->attr = ATTR_ICE_UFRAG;
+			break;
+		case 10:
+			if (!str_cmp(&a->name, "rtcp-rsize"))
+				a->attr = ATTR_RTCP_RSIZE;
 			break;
 		case 11:
 			if (!str_cmp(&a->name, "ice-options"))
@@ -1661,6 +1666,10 @@ static int process_media_attributes(struct sdp_chopper *chop, struct sdp_media *
 				if (a && a->u.group.semantics == GROUP_BUNDLE)
 					goto strip;
 				break;
+
+			case ATTR_RTCP_RSIZE:
+				if (media->protocol && !media->protocol->avpf)
+					goto strip;
 
 			default:
 				break;

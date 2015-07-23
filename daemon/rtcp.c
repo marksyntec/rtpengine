@@ -368,9 +368,15 @@ static int rtcp_payload(struct rtcp_packet **out, str *p, const str *s) {
 	if ((rtcp->header.v_p_x & 0xc0) != 0x80) /* version 2 */
 		goto error;
 	err = "invalid packet type";
-	if (rtcp->header.pt != RTCP_PT_SR
-			&& rtcp->header.pt != RTCP_PT_RR)
-		goto error;
+	switch (rtcp->header.pt) {
+		case RTCP_PT_SR:
+		case RTCP_PT_RR:
+		case RTCP_PT_PSFB:
+		case RTCP_PT_RTPFB:
+			break;
+		default:
+			goto error;
+	}
 
 	*p = *s;
 	str_shift(p, sizeof(*rtcp));
