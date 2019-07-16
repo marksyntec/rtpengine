@@ -308,14 +308,17 @@ INLINE void str_swap(str *a, str *b) {
 }
 
 INLINE int str_to_i(str *s, int def) {
-	char c, *ep;
+	char *ep;
 	long ret;
 	if (s->len <= 0)
 		return def;
-	c = s->s[s->len];
-	s->s[s->len] = '\0';
-	ret = strtol(s->s, &ep, 10);
-	s->s[s->len] = c;
+	char *tmp = malloc(s->len + 1);
+	if (!tmp)
+		return def;
+	memcpy(tmp, s->s, s->len);
+	tmp[s->len] = '\0';
+	ret = strtol(tmp, &ep, 10);
+	free(tmp);
 	if (ep == s->s)
 		return def;
 	if (ret > INT_MAX)
@@ -326,14 +329,17 @@ INLINE int str_to_i(str *s, int def) {
 }
 
 INLINE unsigned int str_to_ui(str *s, int def) {
-	char c, *ep;
+	char *ep;
 	long ret;
 	if (s->len <= 0)
 		return def;
-	c = s->s[s->len];
-	s->s[s->len] = '\0';
-	ret = strtol(s->s, &ep, 10);
-	s->s[s->len] = c;
+	char *tmp = malloc(s->len + 1);
+	if (!tmp)
+		return def;
+	memcpy(tmp, s->s, s->len);
+	tmp[s->len] = '\0';
+	ret = strtol(tmp, &ep, 10);
+	free(tmp);
 	if (ep == s->s)
 		return def;
 	return ret;
