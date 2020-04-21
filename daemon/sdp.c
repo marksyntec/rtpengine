@@ -1957,6 +1957,7 @@ static int process_media_attributes(struct sdp_chopper *chop, struct sdp_media *
 		if (MEDIA_ISSET(media, GENERATOR))
 			goto strip;
 
+		// protocol-agnostic attributes
 		switch (attr->attr) {
 			case ATTR_ICE:
 			case ATTR_ICE_UFRAG:
@@ -1983,12 +1984,6 @@ static int process_media_attributes(struct sdp_chopper *chop, struct sdp_media *
 					break;
 				goto strip;
 
-			case ATTR_RTCP:
-			case ATTR_RTCP_MUX:
-				if (flags->ice_force_relay)
-					break;
-				goto strip;
-
 			case ATTR_IGNORE:
 			case ATTR_END_OF_CANDIDATES: // we strip it here and re-insert it later
 			case ATTR_MID:
@@ -2001,6 +1996,21 @@ static int process_media_attributes(struct sdp_chopper *chop, struct sdp_media *
 				if (!flags->original_sendrecv)
 					goto strip;
 				break;
+
+			default:
+				break;
+		}
+
+		// leave everything alone if protocol is unsupported
+		if (!media->protocol)
+			continue;
+
+		switch (attr->attr) {
+			case ATTR_RTCP:
+			case ATTR_RTCP_MUX:
+				if (flags->ice_force_relay)
+					break;
+				goto strip;
 
 			case ATTR_RTPMAP:
 			case ATTR_FMTP:
@@ -2382,14 +2392,14 @@ int sdp_replace(struct sdp_chopper *chop, GQueue *sessions, struct call_monologu
 
 			copy_up_to_end_of(chop, &sdp_media->s);
 
-			if (!sdp_media->port_num || !ps->selected_sfd)
-				goto next;
-
 			if (call_media->media_id.s) {
 				chopper_append_c(chop, "a=mid:");
 				chopper_append_str(chop, &call_media->media_id);
 				chopper_append_c(chop, "\r\n");
 			}
+
+			if (!sdp_media->port_num || !ps->selected_sfd)
+				goto next;
 
 			if (proto_is_rtp(call_media->protocol))
 				insert_codec_parameters(chop, call_media);
@@ -2435,11 +2445,13 @@ int sdp_replace(struct sdp_chopper *chop, GQueue *sessions, struct call_monologu
 			else
 				ps_rtcp = NULL;
 
-			insert_crypto(call_media, chop, flags);
-			insert_dtls(call_media, chop);
+			if (proto_is_rtp(call_media->protocol)) {
+				insert_crypto(call_media, chop, flags);
+				insert_dtls(call_media, chop);
 
-			if (call_media->ptime)
-				chopper_append_printf(chop, "a=ptime:%i\r\n", call_media->ptime);
+				if (call_media->ptime)
+					chopper_append_printf(chop, "a=ptime:%i\r\n", call_media->ptime);
+			}
 
 			if (MEDIA_ISSET(call_media, ICE) && call_media->ice_agent) {
 				chopper_append_c(chop, "a=ice-ufrag:");

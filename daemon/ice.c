@@ -347,7 +347,7 @@ void ice_update(struct ice_agent *ag, struct stream_params *sp) {
 	comps = 0;
 	for (l = media->streams.head; l; l = l->next)
 		components[comps++] = l->data;
-	if (comps == 2 && MEDIA_ISSET(media, RTCP_MUX))
+	if (comps == 2 && (MEDIA_ISSET(media, RTCP_MUX) || proto_is_rtp(media->protocol)))
 		components[1] = NULL;
 
 	comps = 0;
