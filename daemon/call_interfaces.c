@@ -820,14 +820,14 @@ static void call_ng_flags_flags(struct sdp_ng_flags *out, str *s, void *dummy) {
 				return;
 			if (call_ng_flags_prefix(out, s, "OSRTP-", ng_osrtp_option, NULL))
 				return;
-			if (out->opmode == OP_OFFER) {
-				if (call_ng_flags_prefix(out, s, "codec-strip-", call_ng_flags_str_ht,
-							&out->codec_strip))
-					return;
-				if (call_ng_flags_prefix(out, s, "codec-offer-", call_ng_flags_codec_list,
-							&out->codec_offer))
-					return;
+			if (call_ng_flags_prefix(out, s, "codec-strip-", call_ng_flags_str_ht,
+						&out->codec_strip))
+				return;
+			if (call_ng_flags_prefix(out, s, "codec-offer-", call_ng_flags_codec_list,
+						&out->codec_offer))
+				return;
 #ifdef WITH_TRANSCODING
+			if (out->opmode == OP_OFFER) {
 				if (call_ng_flags_prefix(out, s, "transcode-", call_ng_flags_codec_list,
 							&out->codec_transcode))
 					return;
@@ -844,8 +844,8 @@ static void call_ng_flags_flags(struct sdp_ng_flags *out, str *s, void *dummy) {
 					return;
 				if (call_ng_flags_prefix(out, s, "T.38-", ng_t38_option, NULL))
 					return;
-#endif
 			}
+#endif
 
 			ilog(LOG_WARN, "Unknown flag encountered: '" STR_FORMAT "'",
 					STR_FMT(s));
