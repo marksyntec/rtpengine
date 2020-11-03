@@ -1914,6 +1914,14 @@ static int amr_decoder_input(decoder_t *dec, const str *data, GQueue *out) {
 			goto err;
 
 		amr_bitrate_tracker(dec, ft);
+
+		// track SID frames
+		if (bits == 40 && frame.len == 6) {
+			assert(sizeof(dec->u.avc.u.amr.last_sid) == 6);
+			memcpy(dec->u.avc.u.amr.last_sid, frame.s, 6);
+		}
+		else
+			dec->u.avc.u.amr.last_sid[0] = 0; // no SID
 	}
 
 	return 0;
@@ -2087,9 +2095,18 @@ static int packetizer_amr(AVPacket *pkt, GString *buf, str *output, encoder_t *e
 }
 static int amr_packet_lost(decoder_t *dec, GQueue *out) {
 	ilog(LOG_DEBUG, "pushing empty/lost frame to AMR decoder");
-	unsigned char frame_buf[1];
-	frame_buf[0] = 0xf << 3; // no data
+	unsigned char frame_buf[6];
 	str frame = STR_CONST_INIT_BUF(frame_buf);
+	// do we have a last SID frame?
+	if (dec->u.avc.u.amr.last_sid[0]) {
+		assert(sizeof(frame_buf) == sizeof(dec->u.avc.u.amr.last_sid));
+		memcpy(frame_buf, dec->u.avc.u.amr.last_sid, 6);
+	}
+	else {
+		// no data
+		frame_buf[0] = 0xf << 3;
+		frame.len = 1;
+	}
 	if (avc_decoder_input(dec, &frame, out))
 		ilog(LOG_WARN | LOG_FLAG_LIMIT, "Error while writing 'no data' frame to AMR decoder");
 	return 0;

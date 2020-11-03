@@ -190,6 +190,7 @@ struct decoder_s {
 					uint16_t bitrate_tracker[AMR_FT_TYPES];
 					struct timeval tracker_end;
 					struct timeval last_cmr;
+					char last_sid[6]; // FT byte and 5 bytes CN params
 				} amr;
 			} u;
 		} avc;
