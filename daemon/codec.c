@@ -2437,7 +2437,6 @@ static void __dtx_send_later(struct timerthread_queue *ttq, void *p) {
 	struct dtx_entry *dtxe = p;
 	struct transcode_packet *packet = dtxe->packet;
 	struct media_packet *mp = &dtxe->mp;
-	struct packet_stream *ps = mp->stream;
 	int ret = 0;
 
 	mutex_lock(&dtxb->lock);
@@ -2498,12 +2497,13 @@ static void __dtx_send_later(struct timerthread_queue *ttq, void *p) {
 	__ssrc_unlock_both(mp);
 
 	if (mp->packets_out.length && ret == 0) {
-		struct packet_stream *sink = ps->rtp_sink;
+		struct sink_handler *sh = &mp->sink;
+		struct packet_stream *sink = sh->sink;
 
 		if (!sink)
 			media_socket_dequeue(mp, NULL); // just free
 		else {
-			if (ps->handler && media_packet_encrypt(ps->handler->out->rtp_crypt, sink, mp))
+			if (sh->handler && media_packet_encrypt(sh->handler->out->rtp_crypt, sink, mp))
 				ilogs(transcoding, LOG_ERR | LOG_FLAG_LIMIT, "Error encrypting buffered RTP media");
 
 			mutex_lock(&sink->out_lock);

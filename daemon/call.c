@@ -373,7 +373,7 @@ fault:
 void kill_calls_timer(GSList *list, const char *url) {
 	struct call *ca;
 	GList *csl;
-	struct call_monologue *cm, *cd;
+	struct call_monologue *cm;
 	const char *url_prefix, *url_suffix;
 	struct xmlrpc_helper *xh = NULL;
 	char url_buf[128];
@@ -441,25 +441,32 @@ void kill_calls_timer(GSList *list, const char *url) {
 		case XF_KAMAILIO:
 			for (csl = ca->monologues.head; csl; csl = csl->next) {
 				cm = csl->data;
-				cd = cm->active_dialogue;
-				if (!cm->tag.s || !cm->tag.len || !cd || !cd->tag.s || !cd->tag.len)
+				if (!cm->tag.s || !cm->tag.len)
 					continue;
 
-				str *from_tag = g_hash_table_lookup(dup_tags, &cd->tag);
-				if (from_tag && !str_cmp_str(from_tag, &cm->tag))
-					continue;
+				for (GList *sub = cm->subscribers.head; sub; sub = sub->next) {
+					struct call_subscription *cs = sub->data;
+					struct call_monologue *cd = cs->monologue;
 
-				from_tag = str_chunk_insert(xh->c, &cm->tag);
-				str *to_tag = str_chunk_insert(xh->c, &cd->tag);
+					if (!cd->tag.s || !cd->tag.len)
+						continue;
 
-				g_queue_push_tail(&xh->strings,
-						g_string_chunk_insert(xh->c, url_buf));
-				g_queue_push_tail(&xh->strings,
-						str_chunk_insert(xh->c, &ca->callid));
-				g_queue_push_tail(&xh->strings, from_tag);
-				g_queue_push_tail(&xh->strings, to_tag);
+					str *from_tag = g_hash_table_lookup(dup_tags, &cd->tag);
+					if (from_tag && !str_cmp_str(from_tag, &cm->tag))
+						continue;
 
-				g_hash_table_insert(dup_tags, from_tag, to_tag);
+					from_tag = str_chunk_insert(xh->c, &cm->tag);
+					str *to_tag = str_chunk_insert(xh->c, &cd->tag);
+
+					g_queue_push_tail(&xh->strings,
+							g_string_chunk_insert(xh->c, url_buf));
+					g_queue_push_tail(&xh->strings,
+							str_chunk_insert(xh->c, &ca->callid));
+					g_queue_push_tail(&xh->strings, from_tag);
+					g_queue_push_tail(&xh->strings, to_tag);
+
+					g_hash_table_insert(dup_tags, from_tag, to_tag);
+				}
 			}
 			break;
 		}
@@ -521,7 +528,7 @@ static void call_timer(void *ptr) {
 	GList *i, *l;
 	GSList *calls = NULL;
 	struct rtpengine_list_entry *ke;
-	struct packet_stream *ps, *sink;
+	struct packet_stream *ps;
 	struct stats tmpstats;
 	int j, update;
 	struct stream_fd *sfd;
@@ -643,12 +650,17 @@ static void call_timer(void *ptr) {
 
 		update = 0;
 
-		sink = packet_stream_sink(ps);
-
 		if (!ke->target.non_forwarding && diff_packets) {
-			// only check the first
-			struct rtpengine_output_info *o = &ke->outputs[0];
-			if (sink && o->src_addr.family) {
+			for (GList *l = ps->rtp_sinks.head; l; l = l->next) {
+				struct sink_handler *sh = l->data;
+				struct packet_stream *sink = sh->sink;
+
+				if (sh->kernel_output_idx < 0
+						|| sh->kernel_output_idx >= ke->target.num_destinations)
+					continue;
+
+				struct rtpengine_output_info *o = &ke->outputs[sh->kernel_output_idx];
+
 				mutex_lock(&sink->out_lock);
 				if (sink->crypto.params.crypto_suite && sink->ssrc_out
 						&& ntohl(ke->target.ssrc) == sink->ssrc_out->parent->h.ssrc
@@ -1155,6 +1167,17 @@ void __rtp_stats_update(GHashTable *dst, GHashTable *src) {
 	/* we leave previously added but now removed payload types in place */
 }
 
+void free_sink_handler(void *p) {
+	struct sink_handler *sh = p;
+	g_slice_free1(sizeof(*sh), sh);
+}
+void __add_sink_handler(GQueue *q, struct packet_stream *sink) {
+	struct sink_handler *sh = g_slice_alloc0(sizeof(*sh));
+	sh->sink = sink;
+	sh->kernel_output_idx = -1;
+	g_queue_push_tail(q, sh);
+}
+
 static int __init_streams(struct call_media *A, struct call_media *B, const struct stream_params *sp,
 		const struct sdp_ng_flags *flags) {
 	GList *la, *lb;
@@ -1170,7 +1193,8 @@ static int __init_streams(struct call_media *A, struct call_media *B, const stru
 		b = lb->data;
 
 		/* RTP */
-		a->rtp_sink = b;
+		g_queue_clear_full(&a->rtp_sinks, free_sink_handler);
+		__add_sink_handler(&a->rtp_sinks, b);
 		PS_SET(a, RTP); /* XXX technically not correct, could be udptl too */
 
 		__rtp_stats_update(a->rtp_stats, A->codecs_recv);
@@ -1199,12 +1223,11 @@ static int __init_streams(struct call_media *A, struct call_media *B, const stru
 			b = lb->data;
 		}
 
-		if (!MEDIA_ISSET(A, RTCP_MUX)) {
-			a->rtcp_sink = NULL;
+		g_queue_clear_full(&a->rtcp_sinks, free_sink_handler);
+		if (!MEDIA_ISSET(A, RTCP_MUX))
 			PS_CLEAR(a, RTCP);
-		}
 		else {
-			a->rtcp_sink = b;
+			__add_sink_handler(&a->rtcp_sinks, b);
 			PS_SET(a, RTCP);
 			PS_CLEAR(a, IMPLICIT_RTCP);
 		}
@@ -1217,8 +1240,9 @@ static int __init_streams(struct call_media *A, struct call_media *B, const stru
 		assert(la != NULL);
 		a = la->data;
 
-		a->rtp_sink = NULL;
-		a->rtcp_sink = b;
+		g_queue_clear_full(&a->rtp_sinks, free_sink_handler);
+		g_queue_clear_full(&a->rtcp_sinks, free_sink_handler);
+		__add_sink_handler(&a->rtcp_sinks, b);
 		PS_CLEAR(a, RTP);
 		PS_SET(a, RTCP);
 		a->rtcp_sibling = NULL;
@@ -2075,15 +2099,16 @@ static void __update_media_protocol(struct call_media *media, struct call_media 
 }
 
 /* called with call->master_lock held in W */
-int monologue_offer_answer(struct call_monologue *other_ml, GQueue *streams,
+int monologue_offer_answer(struct call_monologue *dialogue[2], GQueue *streams,
 		struct sdp_ng_flags *flags)
 {
 	struct stream_params *sp;
 	GList *media_iter, *ml_media, *other_ml_media;
 	struct call_media *media, *other_media;
-	struct call_monologue *monologue;
 	struct endpoint_map *em;
 	struct call *call;
+	struct call_monologue *other_ml = dialogue[0];
+	struct call_monologue *monologue = dialogue[1];
 
 	/* we must have a complete dialogue, even though the to-tag (monologue->tag)
 	 * may not be known yet */
@@ -2092,7 +2117,6 @@ int monologue_offer_answer(struct call_monologue *other_ml, GQueue *streams,
 		return -1;
 	}
 
-	monologue = other_ml->active_dialogue;
 	call = monologue->call;
 
 	call->last_signal = rtpe_now.tv_sec;
@@ -2314,6 +2338,38 @@ error_intf:
 }
 
 
+static void __unsubscribe_one_link(struct call_monologue *ml, GList *link) {
+	struct call_subscription *cs = link->data;
+	struct call_monologue *other = cs->monologue;
+	ilog(LOG_DEBUG, "Unsubscribing '" STR_FORMAT_M "' from '" STR_FORMAT_M "'",
+			STR_FMT_M(&ml->tag),
+			STR_FMT_M(&other->tag));
+	g_queue_delete_link(&other->subscribers, cs->link);
+	g_queue_delete_link(&ml->subscriptions, link);
+	g_slice_free1(sizeof(*cs), cs);
+}
+static void __unsubscribe_all(struct call_monologue *ml) {
+	while (ml->subscriptions.head)
+		__unsubscribe_one_link(ml, ml->subscriptions.head);
+}
+void __add_subscription(struct call_monologue *ml, struct call_monologue *other) {
+	ilog(LOG_DEBUG, "Subscribing '" STR_FORMAT_M "' to '" STR_FORMAT_M "'",
+			STR_FMT_M(&ml->tag),
+			STR_FMT_M(&other->tag));
+	struct call_subscription *fw_cs = g_slice_alloc0(sizeof(*fw_cs));
+	struct call_subscription *bk_cs = g_slice_alloc0(sizeof(*bk_cs));
+	fw_cs->monologue = other;
+	bk_cs->monologue = ml;
+	g_queue_push_tail(&ml->subscriptions, fw_cs);
+	g_queue_push_tail(&other->subscribers, bk_cs);
+	fw_cs->link = other->subscribers.tail;
+	bk_cs->link = ml->subscriptions.tail;
+}
+static void __subscribe_only_one(struct call_monologue *ml, struct call_monologue *other) {
+	__unsubscribe_all(ml);
+	__add_subscription(ml, other);
+}
+
 static int __rtp_stats_sort(const void *ap, const void *bp) {
 	const struct rtp_stats *a = ap, *b = bp;
 
@@ -2406,8 +2462,8 @@ static void __call_cleanup(struct call *c) {
 		g_queue_clear(&ps->sfds);
 		crypto_cleanup(&ps->crypto);
 
-		ps->rtp_sink = NULL;
-		ps->rtcp_sink = NULL;
+		g_queue_clear_full(&ps->rtp_sinks, free_sink_handler);
+		g_queue_clear_full(&ps->rtcp_sinks, free_sink_handler);
 	}
 
 	for (GList *l = c->medias.head; l; l = l->next) {
@@ -2481,18 +2537,21 @@ void call_destroy(struct call *c) {
 		// stats output only - no cleanups
 
 		ilog(LOG_INFO, "--- Tag '" STR_FORMAT_M "'%s"STR_FORMAT"%s, created "
-				"%u:%02u ago for branch '" STR_FORMAT_M "', in dialogue with '" STR_FORMAT_M "'",
+				"%u:%02u ago for branch '" STR_FORMAT_M "'",
 				STR_FMT_M(&ml->tag),
 				ml->label.s ? " (label '" : "",
 				STR_FMT(ml->label.s ? &ml->label : &STR_EMPTY),
 				ml->label.s ? "')" : "",
 				(unsigned int) (rtpe_now.tv_sec - ml->created) / 60,
 				(unsigned int) (rtpe_now.tv_sec - ml->created) % 60,
-				STR_FMT_M(&ml->viabranch),
-				ml->active_dialogue ? rtpe_common_config_ptr->log_mark_prefix : "",
-				ml->active_dialogue ? ml->active_dialogue->tag.len : 6,
-				ml->active_dialogue ? ml->active_dialogue->tag.s : "(none)",
-				ml->active_dialogue ? rtpe_common_config_ptr->log_mark_suffix : "");
+				STR_FMT_M(&ml->viabranch));
+
+		for (GList *sub = ml->subscriptions.head; sub; sub = sub->next) {
+			struct call_subscription *cs = sub->data;
+			struct call_monologue *csm = cs->monologue;
+			ilog(LOG_INFO, "---     subscribed to '" STR_FORMAT_M "'",
+					STR_FMT_M(&csm->tag));
+		}
 
 		for (k = ml->medias.head; k; k = k->next) {
 			md = k->data;
@@ -2798,7 +2857,6 @@ void __monologue_tag(struct call_monologue *ml, const str *tag) {
 }
 void __monologue_viabranch(struct call_monologue *ml, const str *viabranch) {
 	struct call *call = ml->call;
-	struct call_monologue *other = ml->active_dialogue;
 
 	if (!viabranch || !viabranch->len)
 		return;
@@ -2806,15 +2864,25 @@ void __monologue_viabranch(struct call_monologue *ml, const str *viabranch) {
 	__C_DBG("tagging monologue with viabranch '"STR_FORMAT"'", STR_FMT(viabranch));
 	if (ml->viabranch.s) {
 		g_hash_table_remove(call->viabranches, &ml->viabranch);
-		if (other)
-			g_hash_table_remove(other->branches, &ml->viabranch);
+		for (GList *sub = ml->subscribers.head; sub; sub = sub->next) {
+			struct call_subscription *cs = sub->data;
+			g_hash_table_remove(cs->monologue->branches, &ml->viabranch);
+		}
 	}
 	call_str_cpy(call, &ml->viabranch, viabranch);
 	g_hash_table_insert(call->viabranches, &ml->viabranch, ml);
-	if (other)
-		g_hash_table_insert(other->branches, &ml->viabranch, ml);
+	for (GList *sub = ml->subscribers.head; sub; sub = sub->next) {
+		struct call_subscription *cs = sub->data;
+		g_hash_table_insert(cs->monologue->branches, &ml->viabranch, ml);
+	}
 }
 
+static void __unconfirm_sinks(GQueue *q) {
+	for (GList *l = q->head; l; l = l->next) {
+		struct sink_handler *sh = l->data;
+		__stream_unconfirm(sh->sink);
+	}
+}
 /* must be called with call->master_lock held in W */
 void __monologue_unkernelize(struct call_monologue *monologue) {
 	GList *l, *m;
@@ -2833,14 +2901,28 @@ void __monologue_unkernelize(struct call_monologue *monologue) {
 		for (m = media->streams.head; m; m = m->next) {
 			stream = m->data;
 			__stream_unconfirm(stream);
-			if (stream->rtp_sink)
-				__stream_unconfirm(stream->rtp_sink);
-			if (stream->rtcp_sink)
-				__stream_unconfirm(stream->rtcp_sink);
+			__unconfirm_sinks(&stream->rtp_sinks);
+			__unconfirm_sinks(&stream->rtcp_sinks);
 		}
 	}
 }
+static void __dialogue_unkernelize(struct call_monologue *ml) {
+	for (GList *sub = ml->subscriptions.head; sub; sub = sub->next) {
+		struct call_subscription *cs = sub->data;
+		__monologue_unkernelize(cs->monologue);
+	}
+	for (GList *sub = ml->subscribers.head; sub; sub = sub->next) {
+		struct call_subscription *cs = sub->data;
+		__monologue_unkernelize(cs->monologue);
+	}
+}
 
+static void __unkernelize_sinks(GQueue *q) {
+	for (GList *l = q->head; l; l = l->next) {
+		struct sink_handler *sh = l->data;
+		unkernelize(sh->sink);
+	}
+}
 /* call locked in R */
 void call_media_unkernelize(struct call_media *media) {
 	GList *m;
@@ -2849,8 +2931,8 @@ void call_media_unkernelize(struct call_media *media) {
 	for (m = media->streams.head; m; m = m->next) {
 		stream = m->data;
 		unkernelize(stream);
-		unkernelize(stream->rtp_sink);
-		unkernelize(stream->rtcp_sink);
+		__unkernelize_sinks(&stream->rtp_sinks);
+		__unkernelize_sinks(&stream->rtcp_sinks);
 	}
 }
 
@@ -2924,23 +3006,28 @@ static int monologue_destroy(struct call_monologue *ml) {
 
 /* must be called with call->master_lock held in W */
 static void __fix_other_tags(struct call_monologue *one) {
-	struct call_monologue *two;
-
 	if (!one || !one->tag.len)
 		return;
-	two = one->active_dialogue;
-	if (!two || !two->tag.len)
-		return;
 
-	g_hash_table_insert(one->other_tags, &two->tag, two);
-	g_hash_table_insert(two->other_tags, &one->tag, one);
+	for (GList *sub = one->subscribers.head; sub; sub = sub->next) {
+		struct call_subscription *cs = sub->data;
+		struct call_monologue *two = cs->monologue;
+		g_hash_table_insert(one->other_tags, &two->tag, two);
+		g_hash_table_insert(two->other_tags, &one->tag, one);
+	}
 }
 
 /* must be called with call->master_lock held in W */
-static struct call_monologue *call_get_monologue(struct call *call, const str *fromtag, const str *totag,
+struct call_monologue *call_get_monologue(struct call *call, const str *fromtag) {
+	return g_hash_table_lookup(call->tags, fromtag);
+}
+
+/* must be called with call->master_lock held in W */
+static int call_get_monologue_new(struct call_monologue *dialogue[2], struct call *call,
+		const str *fromtag, const str *totag,
 		const str *viabranch)
 {
-	struct call_monologue *ret, *os;
+	struct call_monologue *ret, *os = NULL;
 
 	__C_DBG("getting monologue for tag '"STR_FORMAT"' in call '"STR_FORMAT"'",
 			STR_FMT(fromtag), STR_FMT(&call->callid));
@@ -2953,27 +3040,34 @@ static struct call_monologue *call_get_monologue(struct call *call, const str *f
 
 	__C_DBG("found existing monologue");
 	__monologue_unkernelize(ret);
-	__monologue_unkernelize(ret->active_dialogue);
+	for (GList *sub = ret->subscriptions.head; sub; sub = sub->next) {
+		struct call_subscription *cs = sub->data;
+		__monologue_unkernelize(cs->monologue);
+	}
 
 	if (!viabranch)
 		goto ok_check_tag;
 
-	/* check the viabranch. if it's not known, then this is a branched offer and we need
-	 * to create a new "other side" for this branch. */
-	if (!ret->active_dialogue->viabranch.s) {
-		/* previous "other side" hasn't been tagged with the via-branch, so we'll just
-		 * use this one and tag it */
-		__monologue_viabranch(ret->active_dialogue, viabranch);
-		goto ok_check_tag;
+	for (GList *sub = ret->subscribers.head; sub; sub = sub->next) {
+		struct call_subscription *cs = sub->data;
+		struct call_monologue *csm = cs->monologue;
+		/* check the viabranch. if it's not known, then this is a branched offer and we need
+		 * to create a new "other side" for this branch. */
+		if (!csm->viabranch.s) {
+			/* previous "other side" hasn't been tagged with the via-branch, so we'll just
+			 * use this one and tag it */
+			__monologue_viabranch(csm, viabranch);
+			goto ok_check_tag;
+		}
+		if (!str_cmp_str(&csm->viabranch, viabranch))
+			goto ok_check_tag; /* dialogue still intact */
 	}
-	if (!str_cmp_str(&ret->active_dialogue->viabranch, viabranch))
-		goto ok_check_tag; /* dialogue still intact */
 	os = g_hash_table_lookup(call->viabranches, viabranch);
 	if (os) {
 		/* previously seen branch. use it */
 		__monologue_unkernelize(os);
-		os->active_dialogue = ret;
-		ret->active_dialogue = os;
+		__subscribe_only_one(ret, os);
+		__subscribe_only_one(os, ret);
 		goto ok_check_tag;
 	}
 
@@ -2982,21 +3076,31 @@ static struct call_monologue *call_get_monologue(struct call *call, const str *f
 new_branch:
 	__C_DBG("create new \"other side\" monologue for viabranch "STR_FORMAT, STR_FMT0(viabranch));
 	os = __monologue_create(call);
-	ret->active_dialogue = os;
-	os->active_dialogue = ret;
+	__subscribe_only_one(ret, os);
+	__subscribe_only_one(os, ret);
 	__monologue_viabranch(os, viabranch);
 
 ok_check_tag:
-	os = ret->active_dialogue;
-	if (totag && totag->s && !os->tag.s) {
-		__monologue_tag(os, totag);
-		__fix_other_tags(ret);
+	for (GList *sub = ret->subscriptions.head; sub; sub = sub->next) {
+		struct call_subscription *cs = sub->data;
+		struct call_monologue *csm = cs->monologue;
+		if (!os)
+			os = csm;
+		if (totag && totag->s && !csm->tag.s) {
+			__monologue_tag(csm, totag);
+			__fix_other_tags(ret);
+		}
+		break; // there should only be one
+		// XXX check if there's more than a one-to-one mapping here?
 	}
-	return ret;
+	dialogue[0] = ret;
+	dialogue[1] = os;
+	return 0;
 }
 
 /* must be called with call->master_lock held in W */
-static struct call_monologue *call_get_dialogue(struct call *call, const str *fromtag, const str *totag,
+static int call_get_dialogue(struct call_monologue *dialogue[2], struct call *call, const str *fromtag,
+		const str *totag,
 		const str *viabranch)
 {
 	struct call_monologue *ft, *tt;
@@ -3007,7 +3111,7 @@ static struct call_monologue *call_get_dialogue(struct call *call, const str *fr
 	/* we start with the to-tag. if it's not known, we treat it as a branched offer */
 	tt = g_hash_table_lookup(call->tags, totag);
 	if (!tt)
-		return call_get_monologue(call, fromtag, totag, viabranch);
+		return call_get_monologue_new(dialogue, call, fromtag, totag, viabranch);
 
 	/* if the from-tag is known already, return that */
 	ft = g_hash_table_lookup(call->tags, fromtag);
@@ -3015,9 +3119,26 @@ static struct call_monologue *call_get_dialogue(struct call *call, const str *fr
 		__C_DBG("found existing dialogue");
 
 		/* make sure that the dialogue is actually intact */
-		/* fastpath for a common case */
-		if (!str_cmp_str(totag, &ft->active_dialogue->tag))
-			goto done;
+		if (ft->subscriptions.length != 1 || ft->subscribers.length != 1)
+			goto tag_setup;
+		if (tt->subscriptions.length != 1 || tt->subscribers.length != 1)
+			goto tag_setup;
+
+		struct call_subscription *cs = ft->subscriptions.head->data;
+		if (cs->monologue != tt)
+			goto tag_setup;
+		cs = ft->subscribers.head->data;
+		if (cs->monologue != tt)
+			goto tag_setup;
+
+		cs = tt->subscriptions.head->data;
+		if (cs->monologue != ft)
+			goto tag_setup;
+		cs = tt->subscribers.head->data;
+		if (cs->monologue != ft)
+			goto tag_setup;
+
+		goto done;
 	}
 	else {
 		/* perhaps we can determine the monologue from the viabranch */
@@ -3028,37 +3149,44 @@ static struct call_monologue *call_get_dialogue(struct call *call, const str *fr
 	if (!ft) {
 		/* if we don't have a fromtag monologue yet, we can use a half-complete dialogue
 		 * from the totag if there is one. otherwise we have to create a new one. */
-		ft = tt->active_dialogue;
-		if (ft->tag.s)
+		if (tt->subscriptions.head) {
+			struct call_subscription *cs = tt->subscriptions.head->data;
+			ft = cs->monologue;
+		}
+		if (!ft || ft->tag.s)
 			ft = __monologue_create(call);
 	}
 
+tag_setup:
 	/* the fromtag monologue may be newly created, or half-complete from the totag, or
 	 * derived from the viabranch. */
 	if (!ft->tag.s || str_cmp_str(&ft->tag, fromtag))
 		__monologue_tag(ft, fromtag);
 
-	__monologue_unkernelize(ft->active_dialogue);
-	__monologue_unkernelize(tt->active_dialogue);
-	ft->active_dialogue = tt;
-	tt->active_dialogue = ft;
+	__dialogue_unkernelize(ft);
+	__dialogue_unkernelize(tt);
+	__subscribe_only_one(ft, tt);
+	__subscribe_only_one(tt, ft);
 	__fix_other_tags(ft);
 
 done:
 	__monologue_unkernelize(ft);
-	__monologue_unkernelize(ft->active_dialogue);
-	return ft;
+	__dialogue_unkernelize(ft);
+	dialogue[0] = ft;
+	dialogue[1] = tt;
+	return 0;
 }
 
 /* fromtag and totag strictly correspond to the directionality of the message, not to the actual
  * SIP headers. IOW, the fromtag corresponds to the monologue sending this message, even if the
  * tag is actually from the TO header of the SIP message (as it would be in a 200 OK) */
-struct call_monologue *call_get_mono_dialogue(struct call *call, const str *fromtag, const str *totag,
+int call_get_mono_dialogue(struct call_monologue *dialogue[2], struct call *call, const str *fromtag,
+		const str *totag,
 		const str *viabranch)
 {
 	if (!totag || !totag->s) /* initial offer */
-		return call_get_monologue(call, fromtag, NULL, viabranch);
-	return call_get_dialogue(call, fromtag, totag, viabranch);
+		return call_get_monologue_new(dialogue, call, fromtag, NULL, viabranch);
+	return call_get_dialogue(dialogue, call, fromtag, totag, viabranch);
 }
 
 
@@ -3127,8 +3255,11 @@ int call_delete_branch(const str *callid, const str *branch,
 		// if the associated dialogue has an empty tag (unknown)
 		if (match_tag == totag) {
 			ml = g_hash_table_lookup(c->tags, fromtag);
-			if (ml && ml->active_dialogue && ml->active_dialogue->tag.len == 0)
-				goto do_delete;
+			if (ml && ml->subscriptions.length == 1) {
+				struct call_subscription *cs = ml->subscriptions.head->data;
+				if (cs->monologue->tag.len == 0)
+					goto do_delete;
+			}
 		}
 
 		ilog(LOG_INFO, "Tag '"STR_FORMAT"' in delete message not found, ignoring",
@@ -3141,8 +3272,10 @@ do_delete:
 		ng_call_stats(c, fromtag, totag, output, NULL);
 
 	monologue_stop(ml);
-	if (ml->active_dialogue && ml->active_dialogue->active_dialogue == ml)
-		monologue_stop(ml->active_dialogue);
+	for (GList *l = ml->subscribers.head; l; l = l->next) {
+		struct call_subscription *cs = l->data;
+		monologue_stop(cs->monologue);
+	}
 
 	if (delete_delay > 0) {
 		ilog(LOG_INFO, "Scheduling deletion of call branch '" STR_FORMAT_M "' "

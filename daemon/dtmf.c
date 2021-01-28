@@ -292,7 +292,10 @@ static const char *dtmf_inject_pcm(struct call_media *media, struct call_monolog
 	// ready packets for send
 	// XXX handle encryption?
 
-	media_socket_dequeue(&packet, packet_stream_sink(ps));
+	for (GList *l = ps->rtp_sinks.head; l; l = l->next) {
+		struct sink_handler *sh = l->data;
+		media_socket_dequeue(&packet, sh->sink);
+	}
 
 	obj_put_o((struct obj *) csh);
 	return 0;

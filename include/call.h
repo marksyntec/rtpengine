@@ -259,18 +259,17 @@ struct packet_stream {
 	struct recording_stream recording;	/* LOCK: call->master_lock */
 
 	GQueue			sfds;		/* LOCK: call->master_lock */
-	struct stream_fd * volatile selected_sfd;
+	struct stream_fd *	selected_sfd;
 	struct dtls_connection	ice_dtls;	/* LOCK: in_lock */
-	struct packet_stream	*rtp_sink;	/* LOCK: call->master_lock */
-	struct packet_stream	*rtcp_sink;	/* LOCK: call->master_lock */
+	GQueue			rtp_sinks;	// LOCK: call->master_lock, in_lock for streamhandler
+	GQueue			rtcp_sinks;	// LOCK: call->master_lock, in_lock for streamhandler
 	struct packet_stream	*rtcp_sibling;	/* LOCK: call->master_lock */
-	const struct streamhandler *handler;	/* LOCK: in_lock */
 	struct endpoint		endpoint;	/* LOCK: out_lock */
 	struct endpoint		detected_endpoints[4];	/* LOCK: out_lock */
 	struct timeval		ep_detect_signal; /* LOCK: out_lock */
 	struct endpoint		advertised_endpoint; /* RO */
 	struct crypto_context	crypto;		/* OUT direction, LOCK: out_lock */
-	struct ssrc_ctx		*ssrc_in,	/* LOCK: in_lock */ // XXX eliminate these
+	struct ssrc_ctx		*ssrc_in,	/* LOCK: in_lock */
 				*ssrc_out;	/* LOCK: out_lock */
 	struct send_timer	*send_timer;	/* RO */
 	struct jitter_buffer	*jb;		/* RO */
@@ -352,6 +351,12 @@ struct call_media {
 	volatile unsigned int	media_flags;
 };
 
+// link between subscribers and subscriptions
+struct call_subscription {
+	struct call_monologue	*monologue;
+	GList			*link; // link into the corresponding opposite list
+};
+
 /* half a dialogue */
 /* protected by call->master_lock, except the RO elements */
 struct call_monologue {
@@ -364,12 +369,13 @@ struct call_monologue {
 	str			label;
 	time_t			created;	/* RO */
 	time_t			deleted;
-	struct timeval         started; /* for CDR */
-	struct timeval         terminated; /* for CDR */
-	enum termination_reason term_reason;
+	struct timeval		started; /* for CDR */
+	struct timeval		terminated; /* for CDR */
+	enum termination_reason	term_reason;
 	GHashTable		*other_tags;
 	GHashTable		*branches;
-	struct call_monologue	*active_dialogue;
+	GQueue			subscriptions; // who am I subscribed to (sources)
+	GQueue			subscribers; // who is subscribed to me (sinks)
 	GQueue			medias;
 	GHashTable		*media_ids;
 	struct media_player	*player;
@@ -441,15 +447,20 @@ struct call_monologue *__monologue_create(struct call *call);
 void __monologue_tag(struct call_monologue *ml, const str *tag);
 void __monologue_viabranch(struct call_monologue *ml, const str *viabranch);
 struct packet_stream *__packet_stream_new(struct call *call);
+void __add_subscription(struct call_monologue *ml, struct call_monologue *other);
+void free_sink_handler(void *);
+void __add_sink_handler(GQueue *, struct packet_stream *);
 
 
 struct call *call_get_or_create(const str *callid, int foreign);
 struct call *call_get_opmode(const str *callid, enum call_opmode opmode);
 void call_make_own_foreign(struct call *c, int foreign);
-struct call_monologue *call_get_mono_dialogue(struct call *call, const str *fromtag, const str *totag,
+int call_get_mono_dialogue(struct call_monologue *dialogue[2], struct call *call, const str *fromtag,
+		const str *totag,
 		const str *viabranch);
+struct call_monologue *call_get_monologue(struct call *call, const str *fromtag);
 struct call *call_get(const str *callid);
-int monologue_offer_answer(struct call_monologue *monologue, GQueue *streams, struct sdp_ng_flags *flags);
+int monologue_offer_answer(struct call_monologue *dialogue[2], GQueue *streams, struct sdp_ng_flags *flags);
 int call_delete_branch(const str *callid, const str *branch,
 	const str *fromtag, const str *totag, bencode_item_t *output, int delete_delay);
 void call_destroy(struct call *);
@@ -521,13 +532,6 @@ INLINE str *call_str_init_dup(struct call *c, char *s) {
 	str t;
 	str_init(&t, s);
 	return call_str_dup(c, &t);
-}
-INLINE struct packet_stream *packet_stream_sink(struct packet_stream *ps) {
-	struct packet_stream *ret;
-	ret = ps->rtp_sink;
-	if (!ret)
-		ret = ps->rtcp_sink;
-	return ret;
 }
 INLINE void __call_unkernelize(struct call *call) {
 	for (GList *l = call->monologues.head; l; l = l->next) {
