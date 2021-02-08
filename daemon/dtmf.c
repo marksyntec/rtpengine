@@ -298,7 +298,9 @@ static const char *dtmf_inject_pcm(struct call_media *media, struct call_monolog
 	return 0;
 }
 
-const char *dtmf_inject(struct call_media *media, int code, int volume, int duration, int pause) {
+const char *dtmf_inject(struct call_media *media, int code, int volume, int duration, int pause,
+		struct call_media *sink)
+{
 	struct call_monologue *monologue = media->monologue;
 
 	if (!media->streams.head)
@@ -320,7 +322,7 @@ const char *dtmf_inject(struct call_media *media, int code, int volume, int dura
 		if (pt < 0)
 			break;
 
-		ch = codec_handler_get(media, pt);
+		ch = codec_handler_get(media, pt, sink);
 		if (!ch)
 			continue;
 		if (ch->output_handler && ch->output_handler->ssrc_hash) // context switch if we have multiple inputs going to one output

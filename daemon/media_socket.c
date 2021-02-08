@@ -1229,7 +1229,7 @@ void kernelize(struct packet_stream *stream) {
 			}
 			rs = l->data;
 			// only add payload types that are passthrough
-			struct codec_handler *ch = codec_handler_get(media, rs->payload_type);
+			struct codec_handler *ch = codec_handler_get(media, rs->payload_type, sink->media);
 			if (!ch->kernelize)
 				continue;
 			reti.payload_types[reti.num_payload_types] = rs->payload_type;
@@ -2080,7 +2080,8 @@ static int stream_packet(struct packet_handler_ctx *phc) {
 			goto drop;
 	}
 	else {
-		struct codec_handler *transcoder = codec_handler_get(phc->mp.media, phc->payload_type);
+		struct codec_handler *transcoder = codec_handler_get(phc->mp.media, phc->payload_type,
+				phc->mp.media_out);
 		// this transfers the packet from 's' to 'packets_out'
 		if (transcoder->func(transcoder, &phc->mp))
 			goto drop;

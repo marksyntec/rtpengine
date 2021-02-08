@@ -171,6 +171,7 @@ static codec_handler_func handler_func_t38;
 static struct ssrc_entry *__ssrc_handler_transcode_new(void *p);
 static struct ssrc_entry *__ssrc_handler_new(void *p);
 static void __free_ssrc_handler(void *);
+INLINE struct codec_handler *codec_handler_lookup(GHashTable *ht, int pt, struct call_media *sink);
 
 static void __transcode_packet_free(struct transcode_packet *);
 
@@ -228,7 +229,9 @@ void codec_handler_free(struct codec_handler **handler) {
 	*handler = NULL;
 }
 
-static struct codec_handler *__handler_new(const struct rtp_payload_type *pt, struct call_media *media) {
+static struct codec_handler *__handler_new(const struct rtp_payload_type *pt, struct call_media *media,
+		struct call_media *sink)
+{
 	struct codec_handler *handler = g_slice_alloc0(sizeof(*handler));
 	if (pt)
 		handler->source_pt = *pt;
@@ -238,6 +241,7 @@ static struct codec_handler *__handler_new(const struct rtp_payload_type *pt, st
 	handler->packet_encoded = packet_encoded_rtp;
 	handler->packet_decoded = packet_decoded_fifo;
 	handler->media = media;
+	handler->sink = sink;
 	return handler;
 }
 
@@ -362,7 +366,7 @@ check_output:;
 struct codec_handler *codec_handler_make_playback(const struct rtp_payload_type *src_pt,
 		const struct rtp_payload_type *dst_pt, unsigned long last_ts, struct call_media *media)
 {
-	struct codec_handler *handler = __handler_new(src_pt, media);
+	struct codec_handler *handler = __handler_new(src_pt, media, NULL);
 	handler->dest_pt = *dst_pt;
 	handler->func = handler_func_playback;
 	handler->ssrc_handler = (void *) __ssrc_handler_transcode_new(handler);
@@ -537,7 +541,7 @@ static void __check_send_codecs(struct call_media *receiver, struct call_media *
 		// send, we might still have it configured as a transcoder due to
 		// force accepted codec in the offer
 		struct codec_handler *ch_recv =
-			g_hash_table_lookup(sink->codec_handlers, GINT_TO_POINTER(recv_pt->payload_type));
+			codec_handler_lookup(sink->codec_handlers, recv_pt->payload_type, receiver);
 		if (!ch_recv)
 			continue;
 		//ilog(LOG_DEBUG, "XXXXXXXXXXXX handler transcoder %i", ch_recv->transcoder);
@@ -776,7 +780,7 @@ static void __reorder_transcode_codecs(struct call_media *receiver, struct call_
 		// output PT on the receiver side to ensure codec symmetry.
 		struct rtp_payload_type *sink_pt = l->data;
 		// determine output PT from the codec handler
-		struct codec_handler *ch = codec_handler_get(sink, sink_pt->payload_type);
+		struct codec_handler *ch = codec_handler_get(sink, sink_pt->payload_type, receiver);
 		if (ch && ch->source_pt.payload_type != -1 && ch->dest_pt.payload_type != -1) {
 			__accept_pt(receiver, sink, ch->dest_pt.payload_type, sink_pt->payload_type,
 					accept_only_tc, &insert_pos);
@@ -996,7 +1000,7 @@ static void __check_dtmf_injector(const struct sdp_ng_flags *flags, struct call_
 
 	//receiver->dtmf_injector = codec_handler_make_playback(&src_pt, pref_dest_codec, 0);
 	//receiver->dtmf_injector->dtmf_payload_type = dtmf_payload_type;
-	receiver->dtmf_injector = __handler_new(&src_pt, receiver);
+	receiver->dtmf_injector = __handler_new(&src_pt, receiver, NULL);
 	__make_transcoder(receiver->dtmf_injector, pref_dest_codec, output_transcoders, dtmf_payload_type, 0);
 	receiver->dtmf_injector->func = handler_func_inject_dtmf;
 	g_queue_push_tail(&receiver->codec_handlers_store, receiver->dtmf_injector);
@@ -1005,26 +1009,26 @@ static void __check_dtmf_injector(const struct sdp_ng_flags *flags, struct call_
 
 
 
-static struct codec_handler *__get_pt_handler(struct call_media *receiver, struct rtp_payload_type *pt) {
+static struct codec_handler *__get_pt_handler(struct call_media *receiver, struct rtp_payload_type *pt,
+		struct call_media *sink)
+{
 	ensure_codec_def(pt, receiver);
 	struct codec_handler *handler;
-	handler = g_hash_table_lookup(receiver->codec_handlers, GINT_TO_POINTER(pt->payload_type));
+	handler = codec_handler_lookup(receiver->codec_handlers, pt->payload_type, sink);
 	if (handler) {
 		// make sure existing handler matches this PT
 		if (rtp_payload_type_cmp(pt, &handler->source_pt)) {
 			ilogs(codec, LOG_DEBUG, "Resetting codec handler for PT %u", pt->payload_type);
+			g_hash_table_remove(receiver->codec_handlers, &handler);
 			handler = NULL;
 			g_atomic_pointer_set(&receiver->codec_handler_cache, NULL);
-			g_hash_table_remove(receiver->codec_handlers, GINT_TO_POINTER(pt->payload_type));
 		}
 	}
 	if (!handler) {
 		ilogs(codec, LOG_DEBUG, "Creating codec handler for " STR_FORMAT,
 				STR_FMT(&pt->encoding_with_params));
-		handler = __handler_new(pt, receiver);
-		g_hash_table_insert(receiver->codec_handlers,
-				GINT_TO_POINTER(handler->source_pt.payload_type),
-				handler);
+		handler = __handler_new(pt, receiver, sink);
+		g_hash_table_insert(receiver->codec_handlers, handler, handler);
 		g_queue_push_tail(&receiver->codec_handlers_store, handler);
 	}
 
@@ -1044,7 +1048,7 @@ static void __check_t38_decoder(struct call_media *t38_media) {
 	if (t38_media->t38_handler)
 		return;
 	ilogs(codec, LOG_DEBUG, "Creating T.38 packet handler");
-	t38_media->t38_handler = __handler_new(NULL, t38_media);
+	t38_media->t38_handler = __handler_new(NULL, t38_media, NULL);
 	t38_media->t38_handler->func = handler_func_t38;
 }
 
@@ -1106,7 +1110,7 @@ static void __check_t38_gateway(struct call_media *pcm_media, struct call_media 
 	// links to the T.38 encoder
 	for (GList *l = pcm_media->codecs_prefs_recv.head; l; l = l->next) {
 		struct rtp_payload_type *pt = l->data;
-		struct codec_handler *handler = __get_pt_handler(pcm_media, pt);
+		struct codec_handler *handler = __get_pt_handler(pcm_media, pt, t38_media);
 		if (!pt->codec_def) {
 			// should not happen
 			ilogs(codec, LOG_WARN, "Unsupported codec " STR_FORMAT " for T.38 transcoding",
@@ -1269,6 +1273,29 @@ int __supp_codec_match(struct call_media *receiver, struct call_media *sink, int
 	return 2;
 }
 
+static unsigned int __codec_handler_hash(const void *p) {
+	const struct codec_handler *h = p;
+	return h->source_pt.payload_type ^ GPOINTER_TO_UINT(h->sink);
+}
+static int __codec_handler_eq(const void *a, const void *b) {
+	const struct codec_handler *h = a, *j = b;
+	return h->source_pt.payload_type == j->source_pt.payload_type
+		&& h->sink == j->sink;
+}
+INLINE struct codec_handler __codec_handler_lookup_struct(int pt, struct call_media *sink) {
+	struct codec_handler lookup = {
+		.source_pt = {
+			.payload_type = pt,
+		},
+		.sink = sink,
+	};
+	return lookup;
+}
+INLINE struct codec_handler *codec_handler_lookup(GHashTable *ht, int pt, struct call_media *sink) {
+	struct codec_handler lookup = __codec_handler_lookup_struct(pt, sink);
+	return g_hash_table_lookup(ht, &lookup);
+}
+
 // call must be locked in W
 void codec_handlers_update(struct call_media *receiver, struct call_media *sink,
 		const struct sdp_ng_flags *flags, const struct stream_params *sp)
@@ -1289,7 +1316,7 @@ void codec_handlers_update(struct call_media *receiver, struct call_media *sink,
 	}
 
 	if (!receiver->codec_handlers)
-		receiver->codec_handlers = g_hash_table_new(g_direct_hash, g_direct_equal);
+		receiver->codec_handlers = g_hash_table_new(__codec_handler_hash, __codec_handler_eq);
 
 	// should we transcode to a non-RTP protocol?
 	if (proto_is_not_rtp(sink->protocol)) {
@@ -1407,7 +1434,7 @@ void codec_handlers_update(struct call_media *receiver, struct call_media *sink,
 			}
 		}
 
-		struct codec_handler *handler = __get_pt_handler(receiver, pt);
+		struct codec_handler *handler = __get_pt_handler(receiver, pt, sink);
 
 		// check our own support for this codec
 		if (!pt->codec_def) {
@@ -1609,19 +1636,22 @@ next:
 }
 
 
-static struct codec_handler *codec_handler_get_rtp(struct call_media *m, int payload_type) {
+static struct codec_handler *codec_handler_get_rtp(struct call_media *m, int payload_type,
+		struct call_media *sink)
+{
 	struct codec_handler *h;
 
 	if (payload_type < 0)
 		return NULL;
 
+	struct codec_handler lookup = __codec_handler_lookup_struct(payload_type, sink);
 	h = g_atomic_pointer_get(&m->codec_handler_cache);
-	if (G_LIKELY(G_LIKELY(h) && G_LIKELY(h->source_pt.payload_type == payload_type)))
+	if (G_LIKELY(G_LIKELY(h) && G_LIKELY(__codec_handler_eq(&lookup, h))))
 		return h;
 
 	if (G_UNLIKELY(!m->codec_handlers))
 		return NULL;
-	h = g_hash_table_lookup(m->codec_handlers, GINT_TO_POINTER(payload_type));
+	h = g_hash_table_lookup(m->codec_handlers, &lookup);
 	if (!h)
 		return NULL;
 
@@ -1639,7 +1669,7 @@ static struct codec_handler *codec_handler_get_udptl(struct call_media *m) {
 
 
 // call must be locked in R
-struct codec_handler *codec_handler_get(struct call_media *m, int payload_type) {
+struct codec_handler *codec_handler_get(struct call_media *m, int payload_type, struct call_media *sink) {
 #ifdef WITH_TRANSCODING
 	struct codec_handler *ret = NULL;
 
@@ -1647,7 +1677,7 @@ struct codec_handler *codec_handler_get(struct call_media *m, int payload_type) 
 		goto out;
 
 	if (m->protocol->rtp)
-		ret = codec_handler_get_rtp(m, payload_type);
+		ret = codec_handler_get_rtp(m, payload_type, sink);
 	else if (m->protocol->index == PROTO_UDPTL)
 		ret = codec_handler_get_udptl(m);
 
@@ -2024,7 +2054,7 @@ static struct codec_handler *__decoder_handler(struct codec_handler *h, struct m
 		if (prim_pt == 255)
 			continue;
 
-		struct codec_handler *sequencer_h = codec_handler_get(mp->media, prim_pt);
+		struct codec_handler *sequencer_h = codec_handler_get(mp->media, prim_pt, mp->media_out);
 		if (sequencer_h == h)
 			continue;
 		if (sequencer_h->source_pt.codec_def && sequencer_h->source_pt.codec_def->supplemental)
@@ -3413,11 +3443,12 @@ void codec_tracker_finish(struct call_media *media, struct call_media *other_med
 				int pt_num = GPOINTER_TO_UINT(existing_pts->head->data);
 				existing_pt = g_hash_table_lookup(media->codecs_recv, GINT_TO_POINTER(pt_num));
 			}
-			struct codec_handler *existing_handler = existing_pt ? codec_handler_get(media, existing_pt->payload_type) : NULL;
+			struct codec_handler *existing_handler = existing_pt
+				? codec_handler_get(media, existing_pt->payload_type, other_media) : NULL;
 
 			if (existing_pt && existing_handler && existing_handler->dest_pt.codec_def) {
 				// since this happens after we ran through the codec matchup, we must create the appropriate handler here
-				struct codec_handler *handler = __get_pt_handler(media, pt);
+				struct codec_handler *handler = __get_pt_handler(media, pt, other_media);
 				// duplicate the codec handler of the existing PT
 				__make_transcoder(handler, &existing_handler->dest_pt, NULL, existing_handler->dtmf_payload_type, 0);
 			}
@@ -3451,7 +3482,7 @@ void codec_tracker_finish(struct call_media *media, struct call_media *other_med
 				for (GList *o = other_media->codecs_prefs_recv.head; o; o = o->next) {
 					struct rtp_payload_type *opt = o->data;
 					struct codec_handler *ch = codec_handler_get(other_media,
-							opt->payload_type);
+							opt->payload_type, media);
 					if (!ch)
 						continue;
 
