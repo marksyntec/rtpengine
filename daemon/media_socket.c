@@ -1112,6 +1112,7 @@ static int __rtp_stats_pt_sort(const void *ap, const void *bp) {
 /* called with in_lock held */
 void kernelize(struct packet_stream *stream) {
 	struct rtpengine_target_info reti;
+	struct rtpengine_destination_info redi;
 	struct call *call = stream->call;
 	struct packet_stream *sink = NULL;
 	const char *nk_warn_msg;
@@ -1164,6 +1165,7 @@ void kernelize(struct packet_stream *stream) {
 		goto no_kernel_warn;
 
 	ZERO(reti);
+	ZERO(redi);
 
 	if (PS_ISSET2(stream, STRICT_SOURCE, MEDIA_HANDOVER)) {
 		mutex_lock(&stream->out_lock);
@@ -1178,30 +1180,34 @@ void kernelize(struct packet_stream *stream) {
 	mutex_lock(&sink->out_lock);
 
 	__re_address_translate_ep(&reti.local, &stream->selected_sfd->socket.local);
-	reti.tos = call->tos;
+	redi.local = reti.local;
+	redi.output.tos = call->tos;
 	reti.rtcp_mux = MEDIA_ISSET(media, RTCP_MUX);
 	reti.dtls = MEDIA_ISSET(media, DTLS);
 	reti.stun = media->ice_agent ? 1 : 0;
 	reti.non_forwarding = non_forwarding;
 	reti.rtp_stats = MEDIA_ISSET(media, RTCP_GEN) ? 1 : 0;
 
-	__re_address_translate_ep(&reti.dst_addr, &sink->endpoint);
-	__re_address_translate_ep(&reti.src_addr, &sink->selected_sfd->socket.local);
+	reti.num_destinations = 1;
+	redi.num = 0;
+
+	__re_address_translate_ep(&redi.output.dst_addr, &sink->endpoint);
+	__re_address_translate_ep(&redi.output.src_addr, &sink->selected_sfd->socket.local);
 	if (stream->ssrc_in) {
 		reti.ssrc = htonl(stream->ssrc_in->parent->h.ssrc);
 		if (MEDIA_ISSET(media, TRANSCODE)) {
-			reti.ssrc_out = htonl(stream->ssrc_in->ssrc_map_out);
+			redi.output.ssrc_out = htonl(stream->ssrc_in->ssrc_map_out);
 			reti.transcoding = 1;
 		}
 	}
 
 	stream->handler->in->kernel(&reti.decrypt, stream);
-	stream->handler->out->kernel(&reti.encrypt, sink);
+	stream->handler->out->kernel(&redi.output.encrypt, sink);
 
 	mutex_unlock(&sink->out_lock);
 
 	nk_warn_msg = "encryption cipher or HMAC not supported by kernel module";
-	if (!reti.encrypt.cipher || !reti.encrypt.hmac)
+	if (!redi.output.encrypt.cipher || !redi.output.encrypt.hmac)
 		goto no_kernel_warn;
 	nk_warn_msg = "decryption cipher or HMAC not supported by kernel module";
 	if (!reti.decrypt.cipher || !reti.decrypt.hmac)
@@ -1240,6 +1246,7 @@ void kernelize(struct packet_stream *stream) {
 	recording_stream_kernel_info(stream, &reti);
 
 	kernel_add_stream(&reti);
+	kernel_add_destination(&redi);
 	PS_SET(stream, KERNELIZED);
 
 	return;
