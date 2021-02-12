@@ -38,13 +38,13 @@ const char *ng_command_strings[NGC_COUNT] = {
 	"ping", "offer", "answer", "delete", "query", "list", "start recording",
 	"stop recording", "start forwarding", "stop forwarding", "block DTMF",
 	"unblock DTMF", "block media", "unblock media", "play media", "stop media",
-	"play DTMF", "statistics",
+	"play DTMF", "statistics", "publish", "subscribe",
 };
 const char *ng_command_strings_short[NGC_COUNT] = {
 	"Ping", "Offer", "Answer", "Delete", "Query", "List", "StartRec",
 	"StopRec", "StartFwd", "StopFwd", "BlkDTMF",
 	"UnblkDTMF", "BlkMedia", "UnblkMedia", "PlayMedia", "StopMedia",
-	"PlayDTMF", "Stats",
+	"PlayDTMF", "Stats", "Pub", "Sub",
 };
 
 static void timeval_update_request_time(struct request_time *request, const struct timeval *offer_diff) {
@@ -297,6 +297,14 @@ int control_ng_process(str *buf, const endpoint_t *sin, char *addr,
 		case CSH_LOOKUP("statistics"):
 			errstr = statistics_ng(dict, resp);
 			command = NGC_STATISTICS;
+			break;
+		case CSH_LOOKUP("publish"):
+			errstr = call_publish_ng(dict, resp);
+			command = NGC_PUBLISH;
+			break;
+		case CSH_LOOKUP("subscribe"):
+			errstr = call_subscribe_ng(dict, resp);
+			command = NGC_SUBSCRIBE;
 			break;
 		default:
 			errstr = "Unrecognized command";

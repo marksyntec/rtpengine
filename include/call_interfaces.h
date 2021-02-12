@@ -32,6 +32,7 @@ struct sdp_ng_flags {
 	sockaddr_t parsed_received_from;
 	sockaddr_t parsed_media_address;
 	str direction[2];
+	str interface;
 	sockfamily_t *address_family;
 	int tos;
 	str record_call_str;
@@ -162,6 +163,8 @@ const char *call_stop_media_ng(bencode_item_t *, bencode_item_t *);
 const char *call_play_dtmf_ng(bencode_item_t *, bencode_item_t *);
 void ng_call_stats(struct call *call, const str *fromtag, const str *totag, bencode_item_t *output,
 		struct call_stats *totals);
+const char *call_publish_ng(bencode_item_t *, bencode_item_t *);
+const char *call_subscribe_ng(bencode_item_t *, bencode_item_t *);
 
 int call_interfaces_init(void);
 void call_interfaces_free(void);

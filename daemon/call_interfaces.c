@@ -316,13 +316,16 @@ static void sp_free(void *p) {
 static void streams_free(GQueue *q) {
 	g_queue_clear_full(q, sp_free);
 }
+static void sdp_free_auto(GQueue *q) {
+	sdp_free(q);
+};
 
 
 
 static str *call_request_lookup_tcp(char **out, enum call_opmode opmode) {
 	struct call *c;
 	struct call_monologue *dialogue[2];
-	GQueue s = G_QUEUE_INIT;
+	AUTO_CLEANUP(GQueue s, streams_free) = G_QUEUE_INIT;
 	str *ret = NULL, callid, fromtag, totag = STR_NULL;
 	GHashTable *infohash;
 
@@ -361,7 +364,6 @@ static str *call_request_lookup_tcp(char **out, enum call_opmode opmode) {
 
 out2:
 	rwlock_unlock_w(&c->master_lock);
-	streams_free(&s);
 
 	redis_update_onekey(c, rtpe_redis_write);
 
@@ -937,6 +939,7 @@ static void call_ng_process_flags(struct sdp_ng_flags *out, bencode_item_t *inpu
 	bencode_dictionary_get_str(input, "label", &out->label);
 	bencode_dictionary_get_str(input, "address", &out->address);
 	bencode_dictionary_get_str(input, "sdp", &out->sdp);
+	bencode_dictionary_get_str(input, "interface", &out->interface);
 
 	diridx = 0;
 	if ((list = bencode_dictionary_get_expect(input, "direction", BENCODE_LIST))) {
@@ -1302,12 +1305,12 @@ static const char *call_offer_answer_ng(struct ng_buffer *ngbuf, bencode_item_t 
 		const endpoint_t *sin)
 {
 	const char *errstr;
-	GQueue parsed = G_QUEUE_INIT;
-	GQueue streams = G_QUEUE_INIT;
+	AUTO_CLEANUP(GQueue parsed, sdp_free_auto) = G_QUEUE_INIT;
+	AUTO_CLEANUP(GQueue streams, streams_free) = G_QUEUE_INIT;
 	struct call *call;
 	struct call_monologue *dialogue[2];
 	int ret;
-	struct sdp_ng_flags flags;
+	AUTO_CLEANUP(struct sdp_ng_flags flags, call_ng_free_flags);
 	struct sdp_chopper *chopper;
 
 	call_ng_process_flags(&flags, input, opmode);
@@ -1467,10 +1470,6 @@ static const char *call_offer_answer_ng(struct ng_buffer *ngbuf, bencode_item_t 
 
 	errstr = NULL;
 out:
-	sdp_free(&parsed);
-	streams_free(&streams);
-	call_ng_free_flags(&flags);
-
 	return errstr;
 }
 
@@ -1785,7 +1784,7 @@ stats:
 		}
 	}
 	else {
-		ml = g_hash_table_lookup(call->tags, match_tag);
+		ml = call_get_monologue(call, match_tag);
 		if (ml) {
 			ng_stats_monologue(tags, ml, totals);
 			for (GList *l = ml->subscriptions.head; l; l = l->next) {
@@ -2388,6 +2387,40 @@ out:
 #else
 	return "unsupported";
 #endif
+}
+
+const char *call_publish_ng(bencode_item_t *input, bencode_item_t *output) {
+	AUTO_CLEANUP(struct sdp_ng_flags flags, call_ng_free_flags);
+	AUTO_CLEANUP(GQueue parsed, sdp_free_auto) = G_QUEUE_INIT;
+	AUTO_CLEANUP(GQueue streams, streams_free) = G_QUEUE_INIT;
+
+	call_ng_process_flags(&flags, input, OP_OTHER);
+
+	if (!flags.sdp.s)
+		return "No SDP body in message";
+	if (!flags.call_id.s)
+		return "No call-id in message";
+	if (!flags.from_tag.s)
+		return "No from-tag in message";
+	if (sdp_parse(&flags.sdp, &parsed, &flags))
+		return "Failed to parse SDP";
+	if (sdp_streams(&parsed, &streams, &flags))
+		return "Incomplete SDP specification";
+
+	struct call *call = call_get_or_create(&flags.call_id, 0);
+	struct call_monologue *ml = call_get_or_create_monologue(call, &flags.from_tag);
+
+	int ret = monologue_publish(ml, &streams, &flags);
+	if (ret)
+		ilog(LOG_ERR, "Publish error"); // XXX close call? handle errors?
+
+	rwlock_unlock_w(&call->master_lock);
+	obj_put(call);
+	return NULL;
+}
+
+const char *call_subscribe_ng(bencode_item_t *input, bencode_item_t *output) {
+	return NULL;
 }
 
 void call_interfaces_free() {
