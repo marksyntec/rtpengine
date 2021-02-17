@@ -2079,7 +2079,6 @@ int monologue_offer_answer(struct call_monologue *other_ml, GQueue *streams,
 	struct stream_params *sp;
 	GList *media_iter, *ml_media, *other_ml_media;
 	struct call_media *media, *other_media;
-	unsigned int num_ports;
 	struct call_monologue *monologue;
 	struct endpoint_map *em;
 	struct call *call;
@@ -2230,15 +2229,9 @@ int monologue_offer_answer(struct call_monologue *other_ml, GQueue *streams,
 
 		}
 
-		/* determine number of consecutive ports needed locally.
-		 * XXX only do *=2 for RTP streams? */
-		num_ports = sp->consecutive_ports;
-		num_ports *= 2;
-
-
 		/* local interface selection */
-		__init_interface(media, &sp->direction[1], num_ports);
-		__init_interface(other_media, &sp->direction[0], num_ports);
+		__init_interface(media, &sp->direction[1], sp->num_ports);
+		__init_interface(other_media, &sp->direction[0], sp->num_ports);
 
 		if (media->logical_intf == NULL || other_media->logical_intf == NULL) {
 			goto error_intf;
@@ -2260,8 +2253,8 @@ int monologue_offer_answer(struct call_monologue *other_ml, GQueue *streams,
 			 * RFC 3264, chapter 6:
 			 * If a stream is rejected, the offerer and answerer MUST NOT
 			 * generate media (or RTCP packets) for that stream. */
-			__disable_streams(media, num_ports);
-			__disable_streams(other_media, num_ports);
+			__disable_streams(media, sp->num_ports);
+			__disable_streams(other_media, sp->num_ports);
 			goto init;
 		}
 		if (is_addr_unspecified(&sp->rtp_endpoint.address) && !MEDIA_ISSET(other_media, TRICKLE_ICE)) {
@@ -2274,7 +2267,7 @@ int monologue_offer_answer(struct call_monologue *other_ml, GQueue *streams,
 
 		/* get that many ports for each side, and one packet stream for each port, then
 		 * assign the ports to the streams */
-		em = __get_endpoint_map(media, num_ports, &sp->rtp_endpoint, flags);
+		em = __get_endpoint_map(media, sp->num_ports, &sp->rtp_endpoint, flags);
 		if (!em) {
 			goto error_ports;
 		}
@@ -2282,14 +2275,14 @@ int monologue_offer_answer(struct call_monologue *other_ml, GQueue *streams,
 		if(flags->disable_jb && media->call)
 			media->call->disable_jb=1;
 
-		__num_media_streams(media, num_ports);
+		__num_media_streams(media, sp->num_ports);
 		__assign_stream_fds(media, &em->intf_sfds);
 
-		if (__num_media_streams(other_media, num_ports)) {
+		if (__num_media_streams(other_media, sp->num_ports)) {
 			/* new streams created on OTHER side. normally only happens in
 			 * initial offer. create a wildcard endpoint_map to be filled in
 			 * when the answer comes. */
-			if (__wildcard_endpoint_map(other_media, num_ports))
+			if (__wildcard_endpoint_map(other_media, sp->num_ports))
 				goto error_ports;
 		}
 

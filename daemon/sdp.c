@@ -1510,6 +1510,7 @@ int sdp_streams(const GQueue *sessions, GQueue *streams, struct sdp_ng_flags *fl
 				goto error;
 
 			sp->consecutive_ports = media->port_count;
+			sp->num_ports = sp->consecutive_ports * 2; // only do *=2 for RTP streams?
 			sp->protocol = transport_protocol(&media->transport);
 			sp->type = media->media_type;
 			memcpy(sp->direction, flags->direction, sizeof(sp->direction));
