@@ -842,6 +842,12 @@ Optionally included keys are:
 
 		Enabled full debug logging for this call, regardless of global log level settings.
 
+	- `break NAT`
+
+		Sends three empty UDP packets to the remote RTP peer as soon as an endpoint address
+		is available from a received SDP. Useful to create an initial NAT mapping. Not needed
+		when ICE is in use.
+
 * `generate RTCP`
 
 	Contains a string, either `on` or `off`. If enabled for a call,
