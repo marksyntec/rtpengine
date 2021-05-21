@@ -82,7 +82,7 @@ static void create_parent_dirs(char *dir) {
 }
 
 
-output_t *output_new(const char *path, const char *call, const char *type) {
+output_t *output_new(const char *path, const char *call, const char *type, const char *label) {
 	// construct output file name
 	struct timeval now;
 	struct tm tm;
@@ -110,6 +110,9 @@ output_t *output_new(const char *path, const char *call, const char *type) {
 				break;
 			case 't':
 				g_string_append(f, type);
+				break;
+			case 'l':
+				g_string_append(f, label);
 				break;
 			case 'Y':
 				g_string_append_printf(f, "%04i", tm.tm_year + 1900);

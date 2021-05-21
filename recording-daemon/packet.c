@@ -16,6 +16,7 @@
 #include "db.h"
 #include "streambuf.h"
 #include "resample.h"
+#include "tag.h"
 
 
 static ssize_t ssrc_tls_write(void *, const void *, size_t);
@@ -179,7 +180,8 @@ out:
 	if (mf->recording_on && !ret->output && output_single) {
 		char buf[16];
 		snprintf(buf, sizeof(buf), "%08lx", ssrc);
-		ret->output = output_new(output_dir, mf->parent, buf);
+		tag_t *tag = tag_get(mf, stream->tag);
+		ret->output = output_new(output_dir, mf->parent, buf, tag->label);
 		db_do_stream(mf, ret->output, "single", stream, ssrc);
 	}
 	if ((stream->forwarding_on || mf->forwarding_on) && !ret->tls_fwd_stream) {
