@@ -91,6 +91,7 @@ struct codec_def_s {
 	packetizer_f * const packetizer;
 	const int bits_per_sample;
 	const enum media_type media_type;
+	const str silence_pattern;
 
 	// codec-specific callbacks
 	format_init_f *init;
@@ -268,6 +269,7 @@ enum media_type {
 };
 struct codec_def_s {
 	int dtmf;
+	const str silence_pattern;
 };
 struct packet_sequencer_s {
 };

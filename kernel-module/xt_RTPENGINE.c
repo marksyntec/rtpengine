@@ -1551,11 +1551,15 @@ static int proc_list_show(struct seq_file *f, void *v) {
 		(unsigned long long) atomic64_read(&g->stats.bytes),
 		(unsigned long long) atomic64_read(&g->stats.packets),
 		(unsigned long long) atomic64_read(&g->stats.errors));
-	for (i = 0; i < g->target.num_payload_types; i++)
+	for (i = 0; i < g->target.num_payload_types; i++) {
 		seq_printf(f, "        RTP payload type %3u: %20llu bytes, %20llu packets\n",
 			g->target.payload_types[i].pt_num,
 			(unsigned long long) atomic64_read(&g->rtp_stats[i].bytes),
 			(unsigned long long) atomic64_read(&g->rtp_stats[i].packets));
+		if (g->target.payload_types[i].replace_pattern_len)
+			seq_printf(f, "            %u bytes replacement payload\n",
+					g->target.payload_types[i].replace_pattern_len);
+	}
 	if (g->target.ssrc)
 		seq_printf(f, "  SSRC in: %08x\n", g->target.ssrc);
 	if (g->target.ssrc_out)
@@ -3939,6 +3943,7 @@ static unsigned int rtpengine46(struct sk_buff *skb, struct rtpengine_table *t, 
 	u_int64_t pkt_idx;
 	struct re_stream *stream;
 	struct re_stream_packet *packet;
+	unsigned int i;
 	const char *errstr = NULL;
 
 #if (RE_HAS_MEASUREDELAY)
@@ -4078,6 +4083,19 @@ intercept_done:
 
 no_intercept:
 	if (rtp.ok) {
+		// pattern rewriting
+		if (rtp_pt_idx >= 0 && g->target.payload_types[rtp_pt_idx].replace_pattern_len) {
+			if (g->target.payload_types[rtp_pt_idx].replace_pattern_len == 1)
+				memset(rtp.payload, g->target.payload_types[rtp_pt_idx].replace_pattern[0],
+						rtp.payload_len);
+			else {
+				for (i = 0; i < rtp.payload_len;
+						i += g->target.payload_types[rtp_pt_idx].replace_pattern_len)
+					memcpy(&rtp.payload[i], g->target.payload_types[rtp_pt_idx].replace_pattern,
+							g->target.payload_types[rtp_pt_idx].replace_pattern_len);
+			}
+		}
+
 		// SSRC substitution
 		if (g->target.transcoding && g->target.ssrc_out)
 			rtp.header->ssrc = g->target.ssrc_out;

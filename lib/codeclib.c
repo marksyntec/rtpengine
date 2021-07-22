@@ -133,6 +133,7 @@ static codec_def_t __codec_defs[] = {
 		.bits_per_sample = 8,
 		.media_type = MT_AUDIO,
 		.codec_type = &codec_type_avcodec,
+		.silence_pattern = STR_CONST_INIT("\xd5"),
 	},
 	{
 		.rtpname = "PCMU",
@@ -145,6 +146,7 @@ static codec_def_t __codec_defs[] = {
 		.bits_per_sample = 8,
 		.media_type = MT_AUDIO,
 		.codec_type = &codec_type_avcodec,
+		.silence_pattern = STR_CONST_INIT("\xff"),
 	},
 	{
 		.rtpname = "G723",
@@ -169,6 +171,7 @@ static codec_def_t __codec_defs[] = {
 		.bits_per_sample = 8,
 		.media_type = MT_AUDIO,
 		.codec_type = &codec_type_avcodec,
+		.silence_pattern = STR_CONST_INIT("\xfa"),
 	},
 	{
 		.rtpname = "QCELP",

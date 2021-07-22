@@ -248,6 +248,14 @@ static void control_ng_incoming(struct obj *obj, str *buf, const endpoint_t *sin
 			errstr = call_unblock_media_ng(dict, resp);
 			g_atomic_int_inc(&cur->unblock_media);
 			break;
+		case CSH_LOOKUP("silence media"):
+			errstr = call_silence_media_ng(dict, resp);
+			g_atomic_int_inc(&cur->silence_media);
+			break;
+		case CSH_LOOKUP("unsilence media"):
+			errstr = call_unsilence_media_ng(dict, resp);
+			g_atomic_int_inc(&cur->unsilence_media);
+			break;
 		case CSH_LOOKUP("play media"):
 			errstr = call_play_media_ng(dict, resp);
 			g_atomic_int_inc(&cur->play_media);

@@ -1138,6 +1138,17 @@ void kernelize(struct packet_stream *stream) {
 				continue;
 			struct rtpengine_payload_type *rpt = &reti.payload_types[reti.num_payload_types++];
 			rpt->pt_num = rs->payload_type;
+			int silenced = (call->silence_media || stream->media->monologue->silence_media);
+			str replace_pattern = STR_NULL;
+			if (silenced && ch->source_pt.codec_def)
+				replace_pattern = ch->source_pt.codec_def->silence_pattern;
+			if (replace_pattern.len > sizeof(reti.payload_types->replace_pattern))
+				ilog(LOG_WARNING | LOG_FLAG_LIMIT, "Payload replacement pattern too long (%i)",
+						replace_pattern.len);
+			else {
+				rpt->replace_pattern_len = replace_pattern.len;
+				memcpy(rpt->replace_pattern, replace_pattern.s, replace_pattern.len);
+			}
 		}
 		g_list_free(values);
 	}

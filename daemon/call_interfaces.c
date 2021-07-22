@@ -1751,6 +1751,77 @@ out:
 }
 
 
+const char *call_silence_media_ng(bencode_item_t *input, bencode_item_t *output) {
+	struct call *call;
+	struct call_monologue *monologue;
+	const char *errstr = NULL;
+	struct sdp_ng_flags flags;
+
+	errstr = media_block_match(&call, &monologue, &flags, input);
+	if (errstr)
+		goto out;
+
+	if (monologue) {
+		ilog(LOG_INFO, "Silencing directional media (tag '" STR_FORMAT_M "')",
+				STR_FMT_M(&monologue->tag));
+		monologue->silence_media = 1;
+		__monologue_unkernelize(monologue);
+	}
+	else {
+		ilog(LOG_INFO, "Silencing media (entire call)");
+		call->silence_media = 1;
+		__call_unkernelize(call);
+	}
+
+	errstr = NULL;
+out:
+	if (call) {
+		rwlock_unlock_w(&call->master_lock);
+		obj_put(call);
+	}
+
+	return errstr;
+}
+
+const char *call_unsilence_media_ng(bencode_item_t *input, bencode_item_t *output) {
+	struct call *call;
+	struct call_monologue *monologue;
+	const char *errstr = NULL;
+	struct sdp_ng_flags flags;
+
+	errstr = media_block_match(&call, &monologue, &flags, input);
+	if (errstr)
+		goto out;
+
+	if (monologue) {
+		ilog(LOG_INFO, "Unsilencing directional media (tag '" STR_FORMAT_M "')",
+				STR_FMT_M(&monologue->tag));
+		monologue->silence_media = 0;
+		__monologue_unkernelize(monologue);
+	}
+	else {
+		ilog(LOG_INFO, "Unsilencing media (entire call)");
+		call->silence_media = 0;
+		if (flags.all) {
+			for (GList *l = call->monologues.head; l; l = l->next) {
+				monologue = l->data;
+				monologue->silence_media = 0;
+			}
+		}
+		__call_unkernelize(call);
+	}
+
+	errstr = NULL;
+out:
+	if (call) {
+		rwlock_unlock_w(&call->master_lock);
+		obj_put(call);
+	}
+
+	return NULL;
+}
+
+
 #ifdef WITH_TRANSCODING
 static const char *play_media_select_party(struct call **call, GQueue *monologues,
 		bencode_item_t *input)
