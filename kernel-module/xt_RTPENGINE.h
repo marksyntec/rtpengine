@@ -78,6 +78,11 @@ enum rtpengine_src_mismatch {
 	MSM_PROPAGATE,		/* propagate to userspace daemon */
 };
 
+struct rtpengine_payload_type {
+	unsigned char pt_num;
+	uint32_t clock_rate;
+};
+
 struct rtpengine_target_info {
 	struct re_address		local;
 	struct re_address		expected_src; /* for incoming packets */
@@ -94,7 +99,7 @@ struct rtpengine_target_info {
         u_int32_t                       ssrc; // Expose the SSRC to userspace when we resync.
         u_int32_t                       ssrc_out; // Rewrite SSRC
 
-	unsigned char			payload_types[NUM_PAYLOAD_TYPES]; /* must be sorted */
+	struct rtpengine_payload_type	payload_types[NUM_PAYLOAD_TYPES]; /* must be sorted */
 	unsigned int			num_payload_types;
 
 	unsigned char			tos;

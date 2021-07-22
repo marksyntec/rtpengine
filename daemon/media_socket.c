@@ -1128,7 +1128,7 @@ void kernelize(struct packet_stream *stream) {
 		values = g_list_sort(values, __rtp_stats_pt_sort);
 		for (l = values; l; l = l->next) {
 			if (reti.num_payload_types >= G_N_ELEMENTS(reti.payload_types)) {
-				ilog(LOG_WARNING, "Too many RTP payload types for kernel module");
+				ilog(LOG_WARNING | LOG_FLAG_LIMIT, "Too many RTP payload types for kernel module");
 				break;
 			}
 			rs = l->data;
@@ -1136,7 +1136,8 @@ void kernelize(struct packet_stream *stream) {
 			struct codec_handler *ch = codec_handler_get(stream->media, rs->payload_type);
 			if (!ch->kernelize)
 				continue;
-			reti.payload_types[reti.num_payload_types++] = rs->payload_type;
+			struct rtpengine_payload_type *rpt = &reti.payload_types[reti.num_payload_types++];
+			rpt->pt_num = rs->payload_type;
 		}
 		g_list_free(values);
 	}
