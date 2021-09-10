@@ -146,6 +146,7 @@ enum {
 #define PS_FLAG_ICE				SHARED_FLAG_ICE
 #define PS_FLAG_ZERO_ADDR			0x04000000
 #define PS_FLAG_PIERCE_NAT			0x08000000
+#define PS_FLAG_NAT_WAIT			0x10000000
 
 /* struct call_media */
 #define MEDIA_FLAG_INITIALIZED			0x00010000

@@ -1325,6 +1325,9 @@ void kernelize(struct packet_stream *stream) {
 	else {
 		for (GList *l = sinks->head; l; l = l->next) {
 			struct sink_handler *sh = l->data;
+			struct packet_stream *sink = sh->sink;
+			if (PS_ISSET(sink, NAT_WAIT) && !PS_ISSET(sink, CONFIRMED))
+				continue;
 			const char *err = kernelize_one(&reti, &outputs, stream, sh, sinks);
 			if (err)
 				ilog(LOG_WARNING, "No support for kernel packet forwarding available (%s)", err);
@@ -2329,6 +2332,14 @@ static int stream_packet(struct packet_handler_ctx *phc) {
 				goto out;
 			if (phc->rtcp_discard)
 				goto next;
+		}
+
+		if (PS_ISSET(sh->sink, NAT_WAIT) && !PS_ISSET(sh->sink, CONFIRMED)) {
+			ilog(LOG_DEBUG | LOG_FLAG_LIMIT,
+					"Media packet from %s%s%s discarded due to unconfirmed sink address "
+					"and `NAT-wait` flag",
+					FMT_M(endpoint_print_buf(&phc->mp.fsin)));
+			goto next;
 		}
 
 		if (G_UNLIKELY(!sh->sink->selected_sfd || !phc->out_srtp
